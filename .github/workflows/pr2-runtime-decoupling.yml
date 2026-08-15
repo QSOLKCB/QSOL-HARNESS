@@ -5,7 +5,7 @@ on:
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   qsol-headless:
@@ -24,37 +24,25 @@ jobs:
           python3 -m json.tool README.md >/dev/null
           python3 -m json.tool ROADMAP.md >/dev/null
           python3 -m json.tool docs/architecture.json >/dev/null
-
-      - name: Materialize generated PR2 artifacts on branch push
-        if: github.event_name == 'push' && github.ref == 'refs/heads/agent/runtime-decoupling-pr2'
-        run: |
-          set -euo pipefail
-          cargo fmt --manifest-path qsol/Cargo.toml --all
-          cargo generate-lockfile --manifest-path qsol/Cargo.toml
-          git add qsol/Cargo.lock qsol/runtime/src/lib.rs qsol/runtime/src/main.rs
-          if ! git diff --cached --quiet; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -m "Lock and format QSOL runtime"
-            git push origin HEAD:agent/runtime-decoupling-pr2
-          fi
+          test -f qsol/Cargo.lock
+          cargo metadata --manifest-path qsol/Cargo.toml --locked --no-deps >/dev/null
 
       - name: Format QSOL workspace
         run: cargo fmt --manifest-path qsol/Cargo.toml --all -- --check
 
       - name: Test default provider bus without xAI compatibility
-        run: cargo test --manifest-path qsol/Cargo.toml
+        run: cargo test --locked --manifest-path qsol/Cargo.toml
 
       - name: Test minimal provider bus without HTTP or xAI
-        run: cargo test --manifest-path qsol/Cargo.toml -p qsol-harness-runtime --no-default-features
+        run: cargo test --locked --manifest-path qsol/Cargo.toml -p qsol-harness-runtime --no-default-features
 
       - name: Compile all compatibility adapters
-        run: cargo test --manifest-path qsol/Cargo.toml --all-features
+        run: cargo test --locked --manifest-path qsol/Cargo.toml --all-features
 
       - name: Prove fixture is unavailable in normal headless builds
         run: |
           set -euo pipefail
-          if env -u XAI_API_KEY cargo run --quiet --manifest-path qsol/Cargo.toml \
+          if env -u XAI_API_KEY cargo run --locked --quiet --manifest-path qsol/Cargo.toml \
             -p qsol-harness-runtime --bin qsol-harness-headless -- \
             --config qsol/fixtures/provider-fixture.json \
             --prompt "fixture must fail without feature" \
@@ -68,7 +56,7 @@ jobs:
       - name: Prove headless QSOL runs without an xAI account
         run: |
           set -euo pipefail
-          env -u XAI_API_KEY cargo run --quiet --manifest-path qsol/Cargo.toml \
+          env -u XAI_API_KEY cargo run --locked --quiet --manifest-path qsol/Cargo.toml \
             -p qsol-harness-runtime --bin qsol-harness-headless --features ci-fixture -- \
             --config qsol/fixtures/provider-fixture.json \
             --prompt "PR2 deterministic headless smoke" \
