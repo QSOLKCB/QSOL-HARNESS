@@ -1,7 +1,1 @@
-# Security Policy
-
-Please report security vulnerabilities via our HackerOne program:
-
-https://hackerone.com/x
-
-Do not open public GitHub issues for security reports.
+{"schema":"qsol-harness/security-policy/1","assets":["credentials","provider_tokens","workspace_files","experiment_inputs","solver_outputs","formal_artifacts","receipts","provenance_ledger"],"boundaries":["model_untrusted","retrieval_untrusted_until_classified","tool_output_untrusted_until_validated","workspace_side_effects_sandboxed_by_policy","receipt_hash_identity_immutable_after_emission"],"credential_rules":["never_commit","never_echo","provider_scoped","redact_from_receipts"],"execution_rules":["explicit_tool_authorization","cwd_bound_to_session","network_policy_explicit","solver_and_formal_execution_typed","fail_closed_on_identity_mismatch"],"reporting":{"public_repo":true,"secrets_in_issue":"forbidden","security_sensitive_reproduction":"minimize"},"scientific_security":"false_scientific_claim_is_integrity_failure_even_when_not_code_execution_vulnerability"}
