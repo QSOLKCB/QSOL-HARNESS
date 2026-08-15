@@ -42,8 +42,8 @@ fn run() -> Result<(), RuntimeError> {
     })?;
     let prompt = value_after(&args, "--prompt")
         .ok_or_else(|| RuntimeError::Config("--prompt is required".into()))?;
-    let experiment_id = value_after(&args, "--experiment-id")
-        .unwrap_or_else(|| "qsol-headless".into());
+    let experiment_id =
+        value_after(&args, "--experiment-id").unwrap_or_else(|| "qsol-headless".into());
     let seed = parse_seed(&args)?;
 
     let config = load_config(config_path)?;
@@ -59,7 +59,11 @@ fn run() -> Result<(), RuntimeError> {
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("{{\"schema\":\"qsol-harness/headless-error/1\",\"error\":{}}}", serde_json::to_string(&error.to_string()).unwrap_or_else(|_| "\"serialization failure\"".into()));
+        eprintln!(
+            "{{\"schema\":\"qsol-harness/headless-error/1\",\"error\":{}}}",
+            serde_json::to_string(&error.to_string())
+                .unwrap_or_else(|_| "\"serialization failure\"".into())
+        );
         std::process::exit(2);
     }
 }
