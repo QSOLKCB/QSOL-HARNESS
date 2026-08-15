@@ -1,0 +1,64 @@
+name: PR2 runtime decoupling
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  qsol-headless:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Show pinned Rust toolchain
+        run: rustc --version && cargo --version
+
+      - name: Format QSOL workspace
+        run: cargo fmt --manifest-path qsol/Cargo.toml --all -- --check
+
+      - name: Test default provider bus without xAI compatibility
+        run: cargo test --manifest-path qsol/Cargo.toml
+
+      - name: Test minimal provider bus without HTTP or xAI
+        run: cargo test --manifest-path qsol/Cargo.toml -p qsol-harness-runtime --no-default-features
+
+      - name: Compile all compatibility adapters
+        run: cargo test --manifest-path qsol/Cargo.toml --all-features
+
+      - name: Prove headless QSOL runs without an xAI account
+        run: |
+          set -euo pipefail
+          env -u XAI_API_KEY cargo run --quiet --manifest-path qsol/Cargo.toml \
+            -p qsol-harness-runtime --bin qsol-harness-headless -- \
+            --config qsol/fixtures/provider-fixture.json \
+            --prompt "PR2 deterministic headless smoke" \
+            --experiment-id pr2-ci \
+            --seed 17 > /tmp/qsol-headless.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('/tmp/qsol-headless.json').read_text())
+          assert result['schema'] == 'qsol-harness/headless-result/1'
+          assert result['profile'] == 'NS-LLM'
+          assert result['provider_identity']['provider_id'] == 'fixture'
+          assert result['provider_identity']['model_id'] == 'deterministic-fixture-v1'
+          assert result['receipt']['evidence_class'] == 'MODEL_INFERENCE'
+          assert result['receipt']['status'] == 'ok'
+          assert result['receipt']['actor']['id'] == 'fixture/deterministic-fixture-v1'
+          serialized = json.dumps(result).lower()
+          assert 'xai_api_key' not in serialized
+          assert 'bearer ' not in serialized
+          PY
+
+  upstream-compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Prove upstream Grok agent remains buildable
+        run: cargo check -p xai-grok-agent --locked
