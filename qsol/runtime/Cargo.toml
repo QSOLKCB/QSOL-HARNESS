@@ -16,6 +16,7 @@ path = "src/main.rs"
 default = ["openai-compatible"]
 openai-compatible = ["dep:reqwest"]
 xai-compat = ["openai-compatible"]
+ci-fixture = []
 
 [dependencies]
 reqwest = { workspace = true, optional = true }
