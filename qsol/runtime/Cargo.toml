@@ -1,0 +1,25 @@
+[package]
+name = "qsol-harness-runtime"
+version = "0.2.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "qsol_harness_runtime"
+path = "src/lib.rs"
+
+[[bin]]
+name = "qsol-harness-headless"
+path = "src/main.rs"
+
+[features]
+default = ["openai-compatible"]
+openai-compatible = ["dep:reqwest"]
+xai-compat = ["openai-compatible"]
+
+[dependencies]
+reqwest = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
