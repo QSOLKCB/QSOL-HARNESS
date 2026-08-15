@@ -102,7 +102,9 @@ impl ProviderConfig {
     }
 
     fn auth_env_name(&self) -> Option<&str> {
-        self.auth_ref.as_deref().and_then(|value| value.strip_prefix("env:"))
+        self.auth_ref
+            .as_deref()
+            .and_then(|value| value.strip_prefix("env:"))
     }
 }
 
@@ -135,7 +137,9 @@ pub struct InferenceRequest {
 impl InferenceRequest {
     fn validate(&self) -> Result<(), RuntimeError> {
         if self.experiment_id.trim().is_empty() {
-            return Err(RuntimeError::Config("experiment_id must not be empty".into()));
+            return Err(RuntimeError::Config(
+                "experiment_id must not be empty".into(),
+            ));
         }
         if self.prompt.is_empty() {
             return Err(RuntimeError::Config("prompt must not be empty".into()));
@@ -289,8 +293,8 @@ impl ModelProvider for OpenAiCompatibleProvider {
 
         let mut outgoing = client.post(&self.endpoint).json(&body);
         if let Some(name) = self.config.auth_env_name() {
-            let token = std::env::var(name)
-                .map_err(|_| RuntimeError::MissingAuthEnv(name.to_owned()))?;
+            let token =
+                std::env::var(name).map_err(|_| RuntimeError::MissingAuthEnv(name.to_owned()))?;
             outgoing = outgoing.bearer_auth(token);
         } else if self.config.provider_id.eq_ignore_ascii_case("xai") {
             #[cfg(feature = "xai-compat")]
@@ -306,7 +310,9 @@ impl ModelProvider for OpenAiCompatibleProvider {
             .pointer("/choices/0/message/content")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
-            .ok_or_else(|| RuntimeError::Provider("response omitted choices[0].message.content".into()))
+            .ok_or_else(|| {
+                RuntimeError::Provider("response omitted choices[0].message.content".into())
+            })
     }
 }
 
