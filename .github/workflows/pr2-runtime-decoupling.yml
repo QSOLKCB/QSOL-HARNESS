@@ -5,7 +5,7 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   qsol-headless:
@@ -25,13 +25,19 @@ jobs:
           python3 -m json.tool ROADMAP.md >/dev/null
           python3 -m json.tool docs/architecture.json >/dev/null
 
-      - name: Generate nested lockfile candidate
+      - name: Materialize generated PR2 artifacts on branch push
+        if: github.event_name == 'push' && github.ref == 'refs/heads/agent/runtime-decoupling-pr2'
         run: |
           set -euo pipefail
+          cargo fmt --manifest-path qsol/Cargo.toml --all
           cargo generate-lockfile --manifest-path qsol/Cargo.toml
-          echo '---QSOL-CARGO-LOCK-BEGIN---'
-          cat qsol/Cargo.lock
-          echo '---QSOL-CARGO-LOCK-END---'
+          git add qsol/Cargo.lock qsol/runtime/src/lib.rs qsol/runtime/src/main.rs
+          if ! git diff --cached --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "Lock and format QSOL runtime"
+            git push origin HEAD:agent/runtime-decoupling-pr2
+          fi
 
       - name: Format QSOL workspace
         run: cargo fmt --manifest-path qsol/Cargo.toml --all -- --check
