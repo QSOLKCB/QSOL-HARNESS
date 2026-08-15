@@ -1,0 +1,60 @@
+{
+  "schema": "qsol-harness/runtime-decoupling/1",
+  "phase": "PR-2",
+  "composition_root": "qsol/runtime",
+  "workspace": "qsol/Cargo.toml",
+  "entrypoint": "qsol-harness-headless",
+  "profile": "NS-LLM",
+  "provider_bus": {
+    "selection": "exactly_one_provider",
+    "silent_fallback": false,
+    "identity_required": ["provider_id", "model_id", "transport"],
+    "response_identity_policy": "reject_model_mismatch",
+    "adapters": {
+      "native_fixture": "deterministic_test_or_explicit_feature_ci-fixture_only",
+      "ollama": "openai_compatible_http",
+      "vllm": "openai_compatible_http",
+      "openai_compatible": "generic_http",
+      "xai": "compatibility_only_feature_xai-compat"
+    }
+  },
+  "auth": {
+    "browser_auth_required": false,
+    "xai_account_required": false,
+    "credentials": "environment_reference_only",
+    "embedded_endpoint_credentials": "forbidden",
+    "authenticated_plaintext_http": "forbidden_except_loopback",
+    "receipt_secret_material": "forbidden"
+  },
+  "receipts": {
+    "evidence_class": "MODEL_INFERENCE",
+    "actor_identity": "model-sha256_of_length_prefixed_provider_id_model_id_transport",
+    "provider_identity_structured": true,
+    "status_for_success": "ok",
+    "input_hash": "sha256_canonical_request_json_including_provider_identity",
+    "output_hash": "sha256_provider_output",
+    "receipt_id": "sha256_structured_receipt_material"
+  },
+  "configuration": {
+    "unknown_fields": "reject",
+    "capabilities_object": "required",
+    "mandatory_capabilities": ["tools", "streaming"],
+    "cli_unknown_or_duplicate_options": "reject"
+  },
+  "upstream_boundary": {
+    "root_workspace_mutated": false,
+    "xai_grok_agent_source_mutated": false,
+    "compatibility_check": "cargo check -p xai-grok-agent --locked"
+  },
+  "exit_evidence": [
+    "headless_fixture_rejected_without_explicit_ci-fixture_feature",
+    "headless_fixture_executes_with_XAI_API_KEY_unset_when_ci-fixture_enabled",
+    "provider_identity_receipt_emitted",
+    "same_fixture_request_produces_same_output_and_receipt",
+    "seed_capable_provider_rejects_missing_seed",
+    "response_model_mismatch_rejected",
+    "authenticated_remote_plaintext_endpoint_rejected",
+    "xai_adapter_not_enabled_by_default",
+    "upstream_grok_agent_cargo_check_passes"
+  ]
+}

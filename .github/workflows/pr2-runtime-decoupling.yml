@@ -1,0 +1,93 @@
+name: PR2 runtime decoupling
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  qsol-headless:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Show pinned Rust toolchain
+        run: rustc --version && cargo --version
+
+      - name: Validate PR2 machine metadata
+        run: |
+          python3 -m json.tool docs/runtime-decoupling.json >/dev/null
+          python3 -m json.tool qsol/fixtures/provider-fixture.json >/dev/null
+          python3 -m json.tool README.md >/dev/null
+          python3 -m json.tool ROADMAP.md >/dev/null
+          python3 -m json.tool docs/architecture.json >/dev/null
+          test -f qsol/Cargo.lock
+          cargo metadata --manifest-path qsol/Cargo.toml --locked --no-deps >/dev/null
+
+      - name: Format QSOL workspace
+        run: cargo fmt --manifest-path qsol/Cargo.toml --all -- --check
+
+      - name: Test default provider bus without xAI compatibility
+        run: cargo test --locked --manifest-path qsol/Cargo.toml
+
+      - name: Test minimal provider bus without HTTP or xAI
+        run: cargo test --locked --manifest-path qsol/Cargo.toml -p qsol-harness-runtime --no-default-features
+
+      - name: Compile all compatibility adapters
+        run: cargo test --locked --manifest-path qsol/Cargo.toml --all-features
+
+      - name: Prove fixture is unavailable in normal headless builds
+        run: |
+          set -euo pipefail
+          if env -u XAI_API_KEY cargo run --locked --quiet --manifest-path qsol/Cargo.toml \
+            -p qsol-harness-runtime --bin qsol-harness-headless -- \
+            --config qsol/fixtures/provider-fixture.json \
+            --prompt "fixture must fail without feature" \
+            --experiment-id pr2-fixture-negative \
+            --seed 17 >/tmp/qsol-fixture-negative.json 2>/tmp/qsol-fixture-negative.err; then
+            echo "fixture provider unexpectedly executed without ci-fixture feature" >&2
+            exit 1
+          fi
+          grep -q 'test/CI-only' /tmp/qsol-fixture-negative.err
+
+      - name: Prove headless QSOL runs without an xAI account
+        run: |
+          set -euo pipefail
+          env -u XAI_API_KEY cargo run --locked --quiet --manifest-path qsol/Cargo.toml \
+            -p qsol-harness-runtime --bin qsol-harness-headless --features ci-fixture -- \
+            --config qsol/fixtures/provider-fixture.json \
+            --prompt "PR2 deterministic headless smoke" \
+            --experiment-id pr2-ci \
+            --seed 17 > /tmp/qsol-headless.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('/tmp/qsol-headless.json').read_text())
+          assert result['schema'] == 'qsol-harness/headless-result/1'
+          assert result['profile'] == 'NS-LLM'
+          assert result['provider_identity']['provider_id'] == 'fixture'
+          assert result['provider_identity']['model_id'] == 'deterministic-fixture-v1'
+          assert result['provider_identity']['transport'] == 'native'
+          assert result['receipt']['evidence_class'] == 'MODEL_INFERENCE'
+          assert result['receipt']['status'] == 'ok'
+          assert result['receipt']['actor']['id'].startswith('model-sha256:')
+          assert len(result['receipt']['actor']['id']) == len('model-sha256:') + 64
+          serialized = json.dumps(result).lower()
+          assert 'xai_api_key' not in serialized
+          assert 'bearer ' not in serialized
+          PY
+
+  upstream-compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install upstream dotslash launcher
+        run: cargo install dotslash --locked
+
+      - name: Prove upstream Grok agent remains buildable
+        run: cargo check -p xai-grok-agent --locked

@@ -1,0 +1,14 @@
+{
+  "profile": "NS-LLM",
+  "provider": {
+    "provider_id": "fixture",
+    "model_id": "deterministic-fixture-v1",
+    "transport": "native",
+    "capabilities": {
+      "tools": false,
+      "streaming": false,
+      "seed": true,
+      "structured_output": true
+    }
+  }
+}
