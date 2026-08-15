@@ -69,5 +69,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Install upstream dotslash launcher
+        run: cargo install dotslash --locked
+
       - name: Prove upstream Grok agent remains buildable
         run: cargo check -p xai-grok-agent --locked
