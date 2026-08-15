@@ -61,6 +61,8 @@ pub struct ProviderCapabilities {
     pub seed: bool,
     #[serde(default)]
     pub structured_output: bool,
+    #[serde(default)]
+    pub images: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -71,7 +73,7 @@ pub struct ProviderConfig {
     #[serde(default)]
     pub endpoint: Option<String>,
     #[serde(default)]
-    pub auth_env: Option<String>,
+    pub auth_ref: Option<String>,
     #[serde(default)]
     pub capabilities: ProviderCapabilities,
 }
@@ -84,10 +86,23 @@ impl ProviderConfig {
         if self.model_id.trim().is_empty() {
             return Err(RuntimeError::Config("model_id must not be empty".into()));
         }
-        if self.auth_env.as_deref().is_some_and(|value| value.trim().is_empty()) {
-            return Err(RuntimeError::Config("auth_env must be omitted or non-empty".into()));
+        if let Some(reference) = &self.auth_ref {
+            let Some(name) = reference.strip_prefix("env:") else {
+                return Err(RuntimeError::Config(
+                    "auth_ref must use env:NAME; raw credentials are forbidden".into(),
+                ));
+            };
+            if name.trim().is_empty() {
+                return Err(RuntimeError::Config(
+                    "auth_ref environment variable name must not be empty".into(),
+                ));
+            }
         }
         Ok(())
+    }
+
+    fn auth_env_name(&self) -> Option<&str> {
+        self.auth_ref.as_deref().and_then(|value| value.strip_prefix("env:"))
     }
 }
 
@@ -134,6 +149,12 @@ pub struct ProviderIdentity {
     pub provider_id: String,
     pub model_id: String,
     pub transport: ProviderTransport,
+}
+
+impl ProviderIdentity {
+    fn receipt_actor_id(&self) -> String {
+        format!("{}/{}@{}", self.provider_id, self.model_id, self.transport)
+    }
 }
 
 impl From<&ProviderConfig> for ProviderIdentity {
@@ -267,9 +288,9 @@ impl ModelProvider for OpenAiCompatibleProvider {
         }
 
         let mut outgoing = client.post(&self.endpoint).json(&body);
-        if let Some(name) = &self.config.auth_env {
+        if let Some(name) = self.config.auth_env_name() {
             let token = std::env::var(name)
-                .map_err(|_| RuntimeError::MissingAuthEnv(name.clone()))?;
+                .map_err(|_| RuntimeError::MissingAuthEnv(name.to_owned()))?;
             outgoing = outgoing.bearer_auth(token);
         } else if self.config.provider_id.eq_ignore_ascii_case("xai") {
             #[cfg(feature = "xai-compat")]
@@ -333,7 +354,7 @@ impl CompositionRoot {
         let input_sha256 = sha256_hex(&input);
         let output = self.provider.infer(&request)?;
         let output_sha256 = sha256_hex(output.as_bytes());
-        let actor_id = format!("{}/{}", identity.provider_id, identity.model_id);
+        let actor_id = identity.receipt_actor_id();
         let receipt_material = format!(
             "{}\0{}\0{}\0{}",
             request.experiment_id, actor_id, input_sha256, output_sha256
@@ -384,7 +405,7 @@ mod tests {
                 model_id: "deterministic-fixture-v1".into(),
                 transport: ProviderTransport::Native,
                 endpoint: None,
-                auth_env: None,
+                auth_ref: None,
                 capabilities: ProviderCapabilities {
                     seed,
                     ..ProviderCapabilities::default()
@@ -407,9 +428,13 @@ mod tests {
         assert_eq!(result.provider_identity.provider_id, "fixture");
         assert_eq!(result.receipt.evidence_class, "MODEL_INFERENCE");
         assert_eq!(result.receipt.status, "ok");
-        assert_eq!(result.receipt.actor.id, "fixture/deterministic-fixture-v1");
+        assert_eq!(
+            result.receipt.actor.id,
+            "fixture/deterministic-fixture-v1@native"
+        );
         let serialized = serde_json::to_string(&result).unwrap();
         assert!(!serialized.to_ascii_lowercase().contains("xai_api_key"));
+        assert!(!serialized.to_ascii_lowercase().contains("bearer "));
     }
 
     #[test]
@@ -440,6 +465,13 @@ mod tests {
     }
 
     #[test]
+    fn raw_credentials_are_rejected_in_provider_config() {
+        let mut config = fixture_config(false);
+        config.provider.auth_ref = Some("secret-token".into());
+        assert!(CompositionRoot::from_config(config).is_err());
+    }
+
+    #[test]
     fn wrong_profile_is_rejected() {
         let mut config = fixture_config(false);
         config.profile = "ns-llm".into();
@@ -456,7 +488,7 @@ mod tests {
                 model_id: "grok".into(),
                 transport: ProviderTransport::OpenaiCompatible,
                 endpoint: None,
-                auth_env: None,
+                auth_ref: Some("env:XAI_API_KEY".into()),
                 capabilities: ProviderCapabilities::default(),
             },
         };
