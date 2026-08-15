@@ -25,6 +25,14 @@ jobs:
           python3 -m json.tool ROADMAP.md >/dev/null
           python3 -m json.tool docs/architecture.json >/dev/null
 
+      - name: Generate nested lockfile candidate
+        run: |
+          set -euo pipefail
+          cargo generate-lockfile --manifest-path qsol/Cargo.toml
+          echo '---QSOL-CARGO-LOCK-BEGIN---'
+          cat qsol/Cargo.lock
+          echo '---QSOL-CARGO-LOCK-END---'
+
       - name: Format QSOL workspace
         run: cargo fmt --manifest-path qsol/Cargo.toml --all -- --check
 
@@ -37,11 +45,25 @@ jobs:
       - name: Compile all compatibility adapters
         run: cargo test --manifest-path qsol/Cargo.toml --all-features
 
+      - name: Prove fixture is unavailable in normal headless builds
+        run: |
+          set -euo pipefail
+          if env -u XAI_API_KEY cargo run --quiet --manifest-path qsol/Cargo.toml \
+            -p qsol-harness-runtime --bin qsol-harness-headless -- \
+            --config qsol/fixtures/provider-fixture.json \
+            --prompt "fixture must fail without feature" \
+            --experiment-id pr2-fixture-negative \
+            --seed 17 >/tmp/qsol-fixture-negative.json 2>/tmp/qsol-fixture-negative.err; then
+            echo "fixture provider unexpectedly executed without ci-fixture feature" >&2
+            exit 1
+          fi
+          grep -q 'test/CI-only' /tmp/qsol-fixture-negative.err
+
       - name: Prove headless QSOL runs without an xAI account
         run: |
           set -euo pipefail
           env -u XAI_API_KEY cargo run --quiet --manifest-path qsol/Cargo.toml \
-            -p qsol-harness-runtime --bin qsol-harness-headless -- \
+            -p qsol-harness-runtime --bin qsol-harness-headless --features ci-fixture -- \
             --config qsol/fixtures/provider-fixture.json \
             --prompt "PR2 deterministic headless smoke" \
             --experiment-id pr2-ci \
@@ -57,7 +79,8 @@ jobs:
           assert result['provider_identity']['transport'] == 'native'
           assert result['receipt']['evidence_class'] == 'MODEL_INFERENCE'
           assert result['receipt']['status'] == 'ok'
-          assert result['receipt']['actor']['id'] == 'fixture/deterministic-fixture-v1@native'
+          assert result['receipt']['actor']['id'].startswith('model-sha256:')
+          assert len(result['receipt']['actor']['id']) == len('model-sha256:') + 64
           serialized = json.dumps(result).lower()
           assert 'xai_api_key' not in serialized
           assert 'bearer ' not in serialized
