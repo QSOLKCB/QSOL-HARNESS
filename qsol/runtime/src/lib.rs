@@ -359,7 +359,9 @@ fn extract_openai_compatible_content(
     let resolved_model = value
         .get("model")
         .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| RuntimeError::Provider("response omitted top-level model identity".into()))?;
+        .ok_or_else(|| {
+            RuntimeError::Provider("response omitted top-level model identity".into())
+        })?;
     if resolved_model != expected_model {
         return Err(RuntimeError::Provider(format!(
             "response model mismatch: requested {expected_model}, resolved {resolved_model}"
