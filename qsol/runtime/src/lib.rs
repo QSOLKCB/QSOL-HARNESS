@@ -6,6 +6,8 @@ use thiserror::Error;
 pub const PROFILE_ID: &str = "NS-LLM";
 pub const RESULT_SCHEMA: &str = "qsol-harness/headless-result/1";
 pub const RECEIPT_SCHEMA: &str = "qsol-harness-receipt/1";
+const CANONICAL_REQUEST_SCHEMA: &str = "qsol-harness/canonical-inference-request/1";
+const RECEIPT_MATERIAL_SCHEMA: &str = "qsol-harness/receipt-material/1";
 
 #[derive(Debug, Error)]
 pub enum RuntimeError {
@@ -52,10 +54,9 @@ impl fmt::Display for ProviderTransport {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderCapabilities {
-    #[serde(default)]
     pub tools: bool,
-    #[serde(default)]
     pub streaming: bool,
     #[serde(default)]
     pub seed: bool,
@@ -65,7 +66,21 @@ pub struct ProviderCapabilities {
     pub images: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct GenerationConfig {
+    #[serde(default)]
+    pub temperature: Option<f64>,
+    #[serde(default)]
+    pub top_p: Option<f64>,
+    #[serde(default)]
+    pub seed: Option<u64>,
+    #[serde(default)]
+    pub max_tokens: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
     pub provider_id: String,
     pub model_id: String,
@@ -74,8 +89,9 @@ pub struct ProviderConfig {
     pub endpoint: Option<String>,
     #[serde(default)]
     pub auth_ref: Option<String>,
-    #[serde(default)]
     pub capabilities: ProviderCapabilities,
+    #[serde(default)]
+    pub generation: Option<GenerationConfig>,
 }
 
 impl ProviderConfig {
@@ -98,6 +114,16 @@ impl ProviderConfig {
                 ));
             }
         }
+        if self
+            .generation
+            .as_ref()
+            .and_then(|generation| generation.max_tokens)
+            == Some(0)
+        {
+            return Err(RuntimeError::Config(
+                "generation.max_tokens must be greater than zero".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -108,7 +134,8 @@ impl ProviderConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeConfig {
     pub profile: String,
     pub provider: ProviderConfig,
@@ -127,6 +154,7 @@ impl RuntimeConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct InferenceRequest {
     pub experiment_id: String,
     pub prompt: String,
@@ -156,8 +184,16 @@ pub struct ProviderIdentity {
 }
 
 impl ProviderIdentity {
+    fn binding_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        append_length_prefixed(&mut bytes, self.provider_id.as_bytes());
+        append_length_prefixed(&mut bytes, self.model_id.as_bytes());
+        append_length_prefixed(&mut bytes, self.transport.to_string().as_bytes());
+        bytes
+    }
+
     fn receipt_actor_id(&self) -> String {
-        format!("{}/{}@{}", self.provider_id, self.model_id, self.transport)
+        format!("model-sha256:{}", sha256_hex(&self.binding_bytes()))
     }
 }
 
@@ -169,6 +205,11 @@ impl From<&ProviderConfig> for ProviderIdentity {
             transport: config.transport.clone(),
         }
     }
+}
+
+fn append_length_prefixed(target: &mut Vec<u8>, value: &[u8]) {
+    target.extend_from_slice(&(value.len() as u64).to_be_bytes());
+    target.extend_from_slice(value);
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -199,17 +240,50 @@ pub struct HeadlessResult {
     pub receipt: EvidenceReceipt,
 }
 
+#[derive(Serialize)]
+struct CanonicalInferenceEnvelope<'a> {
+    schema: &'static str,
+    profile: &'static str,
+    provider_identity: &'a ProviderIdentity,
+    request: &'a InferenceRequest,
+}
+
+#[derive(Serialize)]
+struct ReceiptMaterial<'a> {
+    schema: &'static str,
+    experiment_id: &'a str,
+    provider_identity: &'a ProviderIdentity,
+    actor_id: &'a str,
+    input_sha256: &'a str,
+    output_sha256: &'a str,
+}
+
+fn canonical_input_sha256(
+    identity: &ProviderIdentity,
+    request: &InferenceRequest,
+) -> Result<String, RuntimeError> {
+    let envelope = CanonicalInferenceEnvelope {
+        schema: CANONICAL_REQUEST_SCHEMA,
+        profile: PROFILE_ID,
+        provider_identity: identity,
+        request,
+    };
+    Ok(sha256_hex(&serde_json::to_vec(&envelope)?))
+}
+
 pub trait ModelProvider: Send + Sync {
     fn identity(&self) -> ProviderIdentity;
     fn supports_seed(&self) -> bool;
     fn infer(&self, request: &InferenceRequest) -> Result<String, RuntimeError>;
 }
 
+#[cfg(any(test, feature = "ci-fixture"))]
 #[derive(Clone, Debug)]
 struct FixtureProvider {
     config: ProviderConfig,
 }
 
+#[cfg(any(test, feature = "ci-fixture"))]
 impl ModelProvider for FixtureProvider {
     fn identity(&self) -> ProviderIdentity {
         ProviderIdentity::from(&self.config)
@@ -220,11 +294,17 @@ impl ModelProvider for FixtureProvider {
     }
 
     fn infer(&self, request: &InferenceRequest) -> Result<String, RuntimeError> {
-        let canonical = serde_json::to_vec(request)?;
+        let identity = self.identity();
+        let canonical = CanonicalInferenceEnvelope {
+            schema: CANONICAL_REQUEST_SCHEMA,
+            profile: PROFILE_ID,
+            provider_identity: &identity,
+            request,
+        };
         Ok(format!(
             "fixture:{}:{}",
             self.config.model_id,
-            sha256_hex(&canonical)
+            sha256_hex(&serde_json::to_vec(&canonical)?)
         ))
     }
 }
@@ -234,6 +314,63 @@ impl ModelProvider for FixtureProvider {
 struct OpenAiCompatibleProvider {
     config: ProviderConfig,
     endpoint: String,
+}
+
+#[cfg(feature = "openai-compatible")]
+fn endpoint_is_loopback(url: &reqwest::Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+#[cfg(feature = "openai-compatible")]
+fn validate_endpoint(endpoint: &str, will_attach_credentials: bool) -> Result<(), RuntimeError> {
+    let url = reqwest::Url::parse(endpoint)
+        .map_err(|error| RuntimeError::Config(format!("invalid provider endpoint: {error}")))?;
+
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(RuntimeError::Config(
+            "provider endpoint must not embed credentials".into(),
+        ));
+    }
+
+    if will_attach_credentials
+        && url.scheme() != "https"
+        && !(url.scheme() == "http" && endpoint_is_loopback(&url))
+    {
+        return Err(RuntimeError::Config(
+            "bearer credentials require HTTPS; plaintext HTTP is allowed only for loopback endpoints"
+                .into(),
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "openai-compatible")]
+fn extract_openai_compatible_content(
+    value: &serde_json::Value,
+    expected_model: &str,
+) -> Result<String, RuntimeError> {
+    let resolved_model = value
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| RuntimeError::Provider("response omitted top-level model identity".into()))?;
+    if resolved_model != expected_model {
+        return Err(RuntimeError::Provider(format!(
+            "response model mismatch: requested {expected_model}, resolved {resolved_model}"
+        )));
+    }
+
+    value
+        .pointer("/choices/0/message/content")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| RuntimeError::Provider("response omitted choices[0].message.content".into()))
 }
 
 #[cfg(feature = "openai-compatible")]
@@ -266,6 +403,9 @@ impl OpenAiCompatibleProvider {
                 ))
             })?
         };
+
+        let xai_implicit_auth = config.provider_id.eq_ignore_ascii_case("xai");
+        validate_endpoint(&endpoint, config.auth_ref.is_some() || xai_implicit_auth)?;
         Ok(Self { config, endpoint })
     }
 }
@@ -306,22 +446,27 @@ impl ModelProvider for OpenAiCompatibleProvider {
         }
 
         let value: serde_json::Value = outgoing.send()?.error_for_status()?.json()?;
-        value
-            .pointer("/choices/0/message/content")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned)
-            .ok_or_else(|| {
-                RuntimeError::Provider("response omitted choices[0].message.content".into())
-            })
+        extract_openai_compatible_content(&value, &self.config.model_id)
     }
 }
 
 fn build_provider(config: ProviderConfig) -> Result<Box<dyn ModelProvider>, RuntimeError> {
     config.validate()?;
+
     if matches!(config.transport, ProviderTransport::Native)
         && config.provider_id.eq_ignore_ascii_case("fixture")
     {
-        return Ok(Box::new(FixtureProvider { config }));
+        #[cfg(any(test, feature = "ci-fixture"))]
+        {
+            return Ok(Box::new(FixtureProvider { config }));
+        }
+        #[cfg(not(any(test, feature = "ci-fixture")))]
+        {
+            return Err(RuntimeError::UnsupportedProvider(
+                "deterministic fixture is test/CI-only; rebuild with --features ci-fixture for explicit CI execution"
+                    .into(),
+            ));
+        }
     }
 
     #[cfg(feature = "openai-compatible")]
@@ -356,18 +501,22 @@ impl CompositionRoot {
         }
 
         let identity = self.provider.identity();
-        let input = serde_json::to_vec(&request)?;
-        let input_sha256 = sha256_hex(&input);
+        let input_sha256 = canonical_input_sha256(&identity, &request)?;
         let output = self.provider.infer(&request)?;
         let output_sha256 = sha256_hex(output.as_bytes());
         let actor_id = identity.receipt_actor_id();
-        let receipt_material = format!(
-            "{}\0{}\0{}\0{}",
-            request.experiment_id, actor_id, input_sha256, output_sha256
-        );
+        let receipt_material = ReceiptMaterial {
+            schema: RECEIPT_MATERIAL_SCHEMA,
+            experiment_id: &request.experiment_id,
+            provider_identity: &identity,
+            actor_id: &actor_id,
+            input_sha256: &input_sha256,
+            output_sha256: &output_sha256,
+        };
+        let receipt_id = sha256_hex(&serde_json::to_vec(&receipt_material)?);
         let receipt = EvidenceReceipt {
             schema_version: RECEIPT_SCHEMA,
-            receipt_id: sha256_hex(receipt_material.as_bytes()),
+            receipt_id,
             experiment_id: request.experiment_id,
             action: "model_inference",
             input_sha256,
@@ -403,6 +552,16 @@ fn sha256_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    fn capabilities(seed: bool) -> ProviderCapabilities {
+        ProviderCapabilities {
+            tools: false,
+            streaming: false,
+            seed,
+            structured_output: false,
+            images: false,
+        }
+    }
+
     fn fixture_config(seed: bool) -> RuntimeConfig {
         RuntimeConfig {
             profile: PROFILE_ID.into(),
@@ -412,10 +571,8 @@ mod tests {
                 transport: ProviderTransport::Native,
                 endpoint: None,
                 auth_ref: None,
-                capabilities: ProviderCapabilities {
-                    seed,
-                    ..ProviderCapabilities::default()
-                },
+                capabilities: capabilities(seed),
+                generation: None,
             },
         }
     }
@@ -434,10 +591,7 @@ mod tests {
         assert_eq!(result.provider_identity.provider_id, "fixture");
         assert_eq!(result.receipt.evidence_class, "MODEL_INFERENCE");
         assert_eq!(result.receipt.status, "ok");
-        assert_eq!(
-            result.receipt.actor.id,
-            "fixture/deterministic-fixture-v1@native"
-        );
+        assert!(result.receipt.actor.id.starts_with("model-sha256:"));
         let serialized = serde_json::to_string(&result).unwrap();
         assert!(!serialized.to_ascii_lowercase().contains("xai_api_key"));
         assert!(!serialized.to_ascii_lowercase().contains("bearer "));
@@ -471,6 +625,44 @@ mod tests {
     }
 
     #[test]
+    fn provider_identity_changes_canonical_input_hash() {
+        let request = InferenceRequest {
+            experiment_id: "identity-bound".into(),
+            prompt: "same request".into(),
+            seed: Some(3),
+        };
+        let first = ProviderIdentity {
+            provider_id: "provider-a".into(),
+            model_id: "model".into(),
+            transport: ProviderTransport::OpenaiCompatible,
+        };
+        let second = ProviderIdentity {
+            provider_id: "provider-b".into(),
+            model_id: "model".into(),
+            transport: ProviderTransport::OpenaiCompatible,
+        };
+        assert_ne!(
+            canonical_input_sha256(&first, &request).unwrap(),
+            canonical_input_sha256(&second, &request).unwrap()
+        );
+    }
+
+    #[test]
+    fn actor_identity_encoding_resists_delimiter_collisions() {
+        let first = ProviderIdentity {
+            provider_id: "a".into(),
+            model_id: "b/c".into(),
+            transport: ProviderTransport::Native,
+        };
+        let second = ProviderIdentity {
+            provider_id: "a/b".into(),
+            model_id: "c".into(),
+            transport: ProviderTransport::Native,
+        };
+        assert_ne!(first.receipt_actor_id(), second.receipt_actor_id());
+    }
+
+    #[test]
     fn raw_credentials_are_rejected_in_provider_config() {
         let mut config = fixture_config(false);
         config.provider.auth_ref = Some("secret-token".into());
@@ -478,10 +670,70 @@ mod tests {
     }
 
     #[test]
+    fn unknown_provider_fields_are_rejected() {
+        let config = r#"{
+            "profile":"NS-LLM",
+            "provider":{
+                "provider_id":"example",
+                "model_id":"model",
+                "transport":"openai-compatible",
+                "api_key":"secret",
+                "capabilities":{"tools":false,"streaming":false}
+            }
+        }"#;
+        assert!(serde_json::from_str::<RuntimeConfig>(config).is_err());
+    }
+
+    #[test]
+    fn capabilities_object_is_required() {
+        let config = r#"{
+            "profile":"NS-LLM",
+            "provider":{
+                "provider_id":"example",
+                "model_id":"model",
+                "transport":"openai-compatible"
+            }
+        }"#;
+        assert!(serde_json::from_str::<RuntimeConfig>(config).is_err());
+    }
+
+    #[test]
+    fn mandatory_capability_fields_are_required() {
+        let config = r#"{
+            "profile":"NS-LLM",
+            "provider":{
+                "provider_id":"example",
+                "model_id":"model",
+                "transport":"openai-compatible",
+                "capabilities":{"seed":true}
+            }
+        }"#;
+        assert!(serde_json::from_str::<RuntimeConfig>(config).is_err());
+    }
+
+    #[test]
     fn wrong_profile_is_rejected() {
         let mut config = fixture_config(false);
         config.profile = "ns-llm".into();
         assert!(CompositionRoot::from_config(config).is_err());
+    }
+
+    #[cfg(feature = "openai-compatible")]
+    #[test]
+    fn response_model_mismatch_fails_closed() {
+        let response = serde_json::json!({
+            "model": "fallback-model",
+            "choices": [{"message": {"content": "answer"}}]
+        });
+        assert!(extract_openai_compatible_content(&response, "requested-model").is_err());
+    }
+
+    #[cfg(feature = "openai-compatible")]
+    #[test]
+    fn authenticated_plaintext_remote_endpoint_is_rejected() {
+        assert!(validate_endpoint("http://example.com/v1/chat/completions", true).is_err());
+        assert!(validate_endpoint("http://127.0.0.1:11434/v1/chat/completions", true).is_ok());
+        assert!(validate_endpoint("https://example.com/v1/chat/completions", true).is_ok());
     }
 
     #[cfg(not(feature = "xai-compat"))]
@@ -495,7 +747,8 @@ mod tests {
                 transport: ProviderTransport::OpenaiCompatible,
                 endpoint: None,
                 auth_ref: Some("env:XAI_API_KEY".into()),
-                capabilities: ProviderCapabilities::default(),
+                capabilities: capabilities(false),
+                generation: None,
             },
         };
         assert!(matches!(
