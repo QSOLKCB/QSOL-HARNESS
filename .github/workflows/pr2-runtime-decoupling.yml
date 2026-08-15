@@ -17,6 +17,14 @@ jobs:
       - name: Show pinned Rust toolchain
         run: rustc --version && cargo --version
 
+      - name: Validate PR2 machine metadata
+        run: |
+          python3 -m json.tool docs/runtime-decoupling.json >/dev/null
+          python3 -m json.tool qsol/fixtures/provider-fixture.json >/dev/null
+          python3 -m json.tool README.md >/dev/null
+          python3 -m json.tool ROADMAP.md >/dev/null
+          python3 -m json.tool docs/architecture.json >/dev/null
+
       - name: Format QSOL workspace
         run: cargo fmt --manifest-path qsol/Cargo.toml --all -- --check
 
@@ -46,9 +54,10 @@ jobs:
           assert result['profile'] == 'NS-LLM'
           assert result['provider_identity']['provider_id'] == 'fixture'
           assert result['provider_identity']['model_id'] == 'deterministic-fixture-v1'
+          assert result['provider_identity']['transport'] == 'native'
           assert result['receipt']['evidence_class'] == 'MODEL_INFERENCE'
           assert result['receipt']['status'] == 'ok'
-          assert result['receipt']['actor']['id'] == 'fixture/deterministic-fixture-v1'
+          assert result['receipt']['actor']['id'] == 'fixture/deterministic-fixture-v1@native'
           serialized = json.dumps(result).lower()
           assert 'xai_api_key' not in serialized
           assert 'bearer ' not in serialized
