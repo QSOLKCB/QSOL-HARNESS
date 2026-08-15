@@ -1,0 +1,66 @@
+name: validate-contracts
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Validate JSON syntax
+        run: |
+          set -euo pipefail
+          python3 -m json.tool README.md >/dev/null
+          python3 -m json.tool AGENTS.md >/dev/null
+          python3 -m json.tool ROADMAP.md >/dev/null
+          python3 -m json.tool SECURITY.md >/dev/null
+          python3 -m json.tool CONTRIBUTING.md >/dev/null
+          python3 -m json.tool docs/architecture.json >/dev/null
+          for file in docs/contracts/*.json; do
+            python3 -m json.tool "$file" >/dev/null
+          done
+
+      - name: Run contract self-test
+        run: python3 docs/contracts/contract-self-test.py
+
+      - name: Guard contract drift
+        run: |
+          set -euo pipefail
+          cp docs/contracts/claim-gate.json /tmp/claim-gate.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path("docs/contracts/claim-gate.json")
+          data = json.loads(p.read_text())
+          data["predicates"]["VALID_RECEIPT"]["requires"]["status"] = "error"
+          p.write_text(json.dumps(data, separators=(",", ":")) + "\n")
+          PY
+          if python3 docs/contracts/contract-self-test.py; then
+            echo "self-test accepted failed receipts as claim-supporting evidence" >&2
+            exit 1
+          fi
+          cp /tmp/claim-gate.json docs/contracts/claim-gate.json
+
+          cp docs/contracts/experiment-envelope.schema.json /tmp/experiment-envelope.schema.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path("docs/contracts/experiment-envelope.schema.json")
+          data = json.loads(p.read_text())
+          data["properties"]["provider"]["$ref"] = "model-provider.schema.json"
+          p.write_text(json.dumps(data, separators=(",", ":")) + "\n")
+          PY
+          if python3 docs/contracts/contract-self-test.py; then
+            echo "self-test accepted a provider reference with the wrong schema base" >&2
+            exit 1
+          fi
+          cp /tmp/experiment-envelope.schema.json docs/contracts/experiment-envelope.schema.json
+
+          python3 docs/contracts/contract-self-test.py

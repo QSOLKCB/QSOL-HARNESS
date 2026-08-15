@@ -1,0 +1,7 @@
+QSOL-HARNESS
+Derived from xai-org/grok-build.
+Upstream first-party source: Apache License 2.0.
+Fork baseline commit: eb267feff13129e568df38fb6fdf0ceb65f735d6
+Upstream SOURCE_REV: e6a67a5408288c98380cd13f3b1fe1fbc01c9f1f
+QSOL modifications introduce a provider-agnostic scientific harness architecture, machine authority contracts, evidence classification, provenance receipts, and fail-closed claim gating.
+Existing third-party licenses and notices remain controlling for their respective components.
